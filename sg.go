@@ -22,6 +22,8 @@ const (
 	TIMEOUT_20_SECS      = 20000
 )
 
+var Debug = false
+
 // pahole for sg_io_hdr_t on amd64
 /*
  * struct sg_io_hdr {
@@ -118,7 +120,9 @@ func Inquire(device string) error {
 		return err
 	}
 
-	fmt.Printf("INQUIRY response:\n%v", hex.Dump(inqBuf))
+	if Debug {
+		fmt.Printf("INQUIRY response:\n%v", hex.Dump(inqBuf))
+	}
 	fmt.Println("Vendor   ID:", parseString(inqBuf[8:][:8]))
 	fmt.Println("Product  ID:", parseString(inqBuf[16:][:16]))
 	fmt.Println("Product rev:", parseString(inqBuf[32:][:4]))
@@ -135,27 +139,66 @@ func Inquire(device string) error {
 		return err
 	}
 
-	fmt.Printf("INQUIRY response:\n%v", hex.Dump(inqBuf))
-	fmt.Println("Serial:", parseString(inqBuf[4:][:20]))
+	if Debug {
+		fmt.Printf("INQUIRY response:\n%v", hex.Dump(inqBuf))
+	}
+	fmt.Println("Serial:", parseString(inqBuf[4:][:12]))
 
+	return nil
+}
+
+func TestUnitReady(device string) error {
+	senseBuf := make([]byte, SENSE_BUF_LEN)
+	inqCmdBlk := []uint8{0, 0, 0, 0, 0, 0}
+	ioHdr := SgIoHdr{
+		InterfaceID:    int32('S'),
+		CmdLen:         uint8(len(inqCmdBlk)),
+		MxSbLen:        SENSE_BUF_LEN,
+		DxferDirection: SG_DXFER_FROM_DEV,
+		Cmdp:           &inqCmdBlk[0],
+		Sbp:            &senseBuf[0],
+		Timeout:        TIMEOUT_20_SECS,
+	}
+
+	f, err := openScsiDevice(device)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	err = ioctl(f.Fd(), SG_IO, uintptr(unsafe.Pointer(&ioHdr)))
+	if err != nil {
+		return err
+	}
+
+	err = checkOK(ioHdr, &senseBuf)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("TUR: OK")
 	return nil
 }
 
 func checkOK(i SgIoHdr, s *[]byte) error {
 	if (i.Info & SG_INFO_OK_MASK) != SG_INFO_OK {
 		if i.SbLenWr > 0 {
-			fmt.Println("INQUIRY SENSE:", hex.Dump(*s))
+			fmt.Printf("SENSE:\n%v\n", dumpHex(*s))
+			fmt.Println(GetErrString((*s)[12], (*s)[13]))
 		}
 		if i.MaskedStatus != 0 {
-			fmt.Println("INQUIRY SCSI status:", i.Status)
+			fmt.Println("SCSI status:", i.Status)
 		}
 		if i.HostStatus != 0 {
-			fmt.Println("INQUIRY host status:", i.HostStatus)
+			fmt.Println("host status:", i.HostStatus)
 		}
 		if i.DriverStatus != 0 {
-			fmt.Println("INQUIRY driver status:", i.DriverStatus)
+			fmt.Println("driver status:", i.DriverStatus)
 		}
 		return errors.New("SCSI response not ok")
+	}
+	if Debug {
+		fmt.Println(GetErrString((*s)[12], (*s)[13]))
 	}
 	return nil
 }
